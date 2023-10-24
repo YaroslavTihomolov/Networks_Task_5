@@ -12,6 +12,8 @@ import java.nio.channels.SelectionKey;
 @AllArgsConstructor
 @NoArgsConstructor
 public class Attachment {
+    private static final int BUFFER_SIZE = 8192;
+
     public Attachment(SelectionKey key, InetAddress inetAddress) {
         this.peerKey = key;
         this.inetAddress = inetAddress;
@@ -19,6 +21,6 @@ public class Attachment {
 
     private SelectionKey peerKey;
     private InetAddress inetAddress;
-    private ByteBuffer buffer = ByteBuffer.allocate(8192);
+    private ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
     private int step = 0;
 }
