@@ -14,13 +14,12 @@ import java.nio.channels.SelectionKey;
 public class Attachment {
     private static final int BUFFER_SIZE = 8192;
 
-    public Attachment(SelectionKey key, InetAddress inetAddress) {
+    public Attachment(SelectionKey key) {
         this.peerKey = key;
-        this.inetAddress = inetAddress;
     }
 
     private SelectionKey peerKey;
-    private InetAddress inetAddress;
-    private ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
+    private ByteBuffer in;
+    private ByteBuffer out;
     private int step = 0;
 }

@@ -13,3 +13,5 @@ k
 ;src/main/java/ru/nsu/ccfit/tikhomolov/proxy/Attachment.java,1\b\1bc18c1ba223614315387cf6ce84fbb4f48cc471
 s
 Csrc/main/java/ru/nsu/ccfit/tikhomolov/proxy/SocksRequestHeader.java,5\c\5cdb4442a7818970384f46ce1a9466095abaf29e
+]
+-.idea/sonarlint/securityhotspotstore/index.pb,8\8\88a9255124c95bdc913197c120a8d560edc59c8e
