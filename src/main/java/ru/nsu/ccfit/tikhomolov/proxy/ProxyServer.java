@@ -1,19 +1,17 @@
 package ru.nsu.ccfit.tikhomolov.proxy;
 
 import lombok.extern.slf4j.Slf4j;
+import org.xbill.DNS.*;
+import org.xbill.DNS.Record;
 import ru.nsu.ccfit.tikhomolov.exceptions.RegisterException;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
+import java.nio.channels.*;
 import java.nio.channels.spi.SelectorProvider;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Iterator;
 
@@ -28,10 +26,10 @@ public class ProxyServer implements AutoCloseable {
     private final ServerSocketChannel serverSocket;
     private final short port;
     private final ByteBuffer answer = ByteBuffer.allocate(2);
-    public static final byte[] CONNECTION_OK_REPLY = new byte[]{
+    private static final byte[] CONNECTION_OK_REPLY = new byte[]{
             SOCKS_VERSION,
             CONNECT_SUCCESS,
-            0x00,
+            RSV,
             ATYP_IPV4,
             0x00,
             0x00,
@@ -83,7 +81,6 @@ public class ProxyServer implements AutoCloseable {
     }
 
     private void read(SelectionKey key) {
-        SocketChannel channel = ((SocketChannel) key.channel());
         try {
             Attachment attachment = (Attachment) key.attachment();
             if (attachment == null) {
@@ -92,11 +89,18 @@ public class ProxyServer implements AutoCloseable {
                 key.attach(attachment);
             }
 
+            if (attachment.getStep() == 3) {
+                attachment.setStep(2);
+                ((Attachment)attachment.getPeerKey().attachment()).setStep(2);
+                attachment.getDatagramChannel().read(attachment.getIn());
+                parseIp(attachment);
+                return;
+            }
+            SocketChannel channel = ((SocketChannel) key.channel());
+
             int count = channel.read(attachment.getIn());
-            //log.info("Read from: " + channel.getRemoteAddress() + " to: " + channel.getLocalAddress() + " data: " + Arrays.toString(attachment.getIn().array()));            //log.info("Read data:");
 
             if (count < 1) {
-                //closeKey(key);
                 return;
             } else if (attachment.getIn().get(0) == SOCKS_VERSION && attachment.getStep() == 0) {
                 handleConnectionMessage(attachment, channel, key);
@@ -106,10 +110,34 @@ public class ProxyServer implements AutoCloseable {
                 saveData(attachment, key);
             }
         } catch (IOException ignored) {
-            //log.warn(new String(ignored.getMessage().getBytes(StandardCharsets.UTF_8)), ignored);
-            //log.error(ignored.getMessage());
         }
 
+    }
+
+    private void handleRequestMessage(ByteBuffer header, int readBytes, SelectionKey key) throws IOException {
+        SocksRequestHeader socksHeader = parseHeader(header, readBytes, key);
+        Attachment attachment = (Attachment) key.attachment();
+        attachment.setSocksRequestHeader(socksHeader);
+
+        if (socksHeader.address() != null) {
+            tryToConnect(key, socksHeader);
+        }
+    }
+
+    private void parseIp(Attachment attachment) throws IOException {
+        var message = new Message(attachment.getIn().array());
+        var maybeRecord = message.getSection(Section.ANSWER).stream().findAny();
+        if (maybeRecord.isPresent()) {
+            InetAddress ipAddr = InetAddress.getByName(maybeRecord.get().rdataToString());
+            Attachment peerAttachment = (Attachment)attachment.getPeerKey().attachment();
+            SocksRequestHeader socksRequestHeader = peerAttachment.getSocksRequestHeader();
+            tryToConnectAfterResolve(attachment.getPeerKey(), socksRequestHeader, ipAddr);
+        }
+    }
+
+    private void tryToConnectAfterResolve(SelectionKey key, SocksRequestHeader socksHeader, InetAddress ip) throws IOException {
+        tryToConnect(key, new SocksRequestHeader(socksHeader.version(), socksHeader.rep(), socksHeader.rsv(),
+                socksHeader.atyp(), ip, socksHeader.port()));
     }
 
     private void saveData(Attachment attachment, SelectionKey key) {
@@ -126,7 +154,6 @@ public class ProxyServer implements AutoCloseable {
 
         answer.flip();
 
-        //answer.compact();
         channel.write(answer);
         header.setStep(1);
 
@@ -136,8 +163,7 @@ public class ProxyServer implements AutoCloseable {
         header.getIn().clear();
     }
 
-    private void handleRequestMessage(ByteBuffer header, int readBytes, SelectionKey key) throws IOException {
-        SocksRequestHeader socksHeader = parseHeader(header, readBytes);
+    private void tryToConnect(SelectionKey key, SocksRequestHeader socksHeader) throws IOException {
         SocketChannel channel = SocketChannel.open();
         channel.configureBlocking(false);
         channel.connect(new InetSocketAddress(socksHeader.address(), socksHeader.port()));
@@ -146,7 +172,6 @@ public class ProxyServer implements AutoCloseable {
         key.interestOps(0);
 
         Attachment attachment = (Attachment) key.attachment();
-        attachment.setStep(2);
         attachment.setPeerKey(peerKey);
 
         Attachment peerAttachment = new Attachment(key);
@@ -163,28 +188,13 @@ public class ProxyServer implements AutoCloseable {
         attachment.getIn().clear();
     }
 
-    private void sendRequest(SelectionKey key) throws IOException {
-        ByteBuffer request = ByteBuffer.allocate(6 + InetAddress.getLoopbackAddress().getAddress().length);
-        request.put(SOCKS_VERSION);
-        request.put(CONNECT_SUCCESS);
-        request.put(RSV);
-        request.put(ATYP_IPV4);
-        request.put(InetAddress.getLoopbackAddress().getAddress());
-        request.putShort(port);
-        SocketChannel channel = (SocketChannel) key.channel();
-        request.flip();
-
-        //request.compact();
-        channel.write(request);
-    }
-
-    private SocksRequestHeader parseHeader(ByteBuffer buffer, int messageLength) throws UnknownHostException {
+    private SocksRequestHeader parseHeader(ByteBuffer buffer, int messageLength, SelectionKey key) throws IOException {
         byte atyp = buffer.get(3);
         byte[] ip;
-        InetAddress inetAddress;
+        InetAddress inetAddress = null;
         if (atyp == 0x03) {
             ip = Arrays.copyOfRange(buffer.array(), 5, messageLength - 2);
-            inetAddress = InetAddress.getByName(new String(ip));
+            resolveName(new String(ip), key);
         } else {
             ip = Arrays.copyOfRange(buffer.array(), 4, messageLength - 2);
             inetAddress = InetAddress.getByAddress(ip);
@@ -194,6 +204,37 @@ public class ProxyServer implements AutoCloseable {
         return new SocksRequestHeader(buffer.get(0), buffer.get(1), buffer.get(2), buffer.get(3), inetAddress, portShort);
     }
 
+    private void resolveName(String dnsName, SelectionKey key) throws IOException {
+        DatagramChannel dnsChannel  = DatagramChannel.open();
+        dnsChannel.configureBlocking(false);
+        SocketAddress serverAddress = new InetSocketAddress(ResolverConfig.getCurrentConfig().servers().get(0).getAddress(),
+                ResolverConfig.getCurrentConfig().servers().get(0).getPort());
+        dnsChannel.connect(serverAddress);
+
+        var dnsKey = dnsChannel.register(selector, SelectionKey.OP_READ);
+
+        Attachment attachment = new Attachment();
+        attachment.setStep(3);
+
+        attachment.setIn(ByteBuffer.allocate(BUFFER_SIZE));
+        attachment.setOut(attachment.getIn());
+        attachment.setDatagramChannel(dnsChannel);
+        attachment.setPeerKey(key);
+
+        dnsKey.attach(attachment);
+
+        Message message = new Message();
+        Record dnsRequest = Record.newRecord(Name.fromString(dnsName + '.'), Type.A, DClass.IN);
+        message.addRecord(dnsRequest, Section.QUESTION);
+
+        Header header = message.getHeader();
+
+        header.setFlag(Flags.AD);
+        header.setFlag(Flags.RD);
+
+        dnsChannel.write(ByteBuffer.wrap(message.toWire()));
+    }
+
     private void write(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         Attachment attachment = (Attachment) key.attachment();
@@ -201,14 +242,10 @@ public class ProxyServer implements AutoCloseable {
             return;
         }
 
-        //peerAttachment.getBuffer().compact();
-        //peerAttachment.getBuffer().flip();
-        //log.info("Write from: " + channel.getLocalAddress() + " to: " + channel.getRemoteAddress() + " data: " + Arrays.toString(attachment.getOut().array()));
-
         int writtenBytes = channel.write(attachment.getOut());
 
         if (writtenBytes == -1) {
-            //closeKey(key);
+            closeKey(key);
             return;
         }
 
@@ -225,7 +262,6 @@ public class ProxyServer implements AutoCloseable {
 
         Attachment attachment = (Attachment) key.attachment();
 
-        //sendRequest(attachment.getPeerKey());
         attachment.getIn().put(CONNECTION_OK_REPLY).flip();
 
         SelectionKey peerKey = attachment.getPeerKey();

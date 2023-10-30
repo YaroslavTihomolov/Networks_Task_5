@@ -6,6 +6,7 @@ import lombok.NoArgsConstructor;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
 
 @Data
@@ -22,4 +23,6 @@ public class Attachment {
     private ByteBuffer in;
     private ByteBuffer out;
     private int step = 0;
+    private DatagramChannel datagramChannel;
+    private SocksRequestHeader socksRequestHeader;
 }
